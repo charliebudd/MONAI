@@ -47,13 +47,17 @@ class BilateralFilter(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, input, spatial_sigma=5, color_sigma=0.5, fast_approx=True):
-        ctx.save_for_backward(spatial_sigma, color_sigma, fast_approx)
+        ctx.spatial_sigma = spatial_sigma
+        ctx.color_sigma = color_sigma
+        ctx.fast_approx = fast_approx
         output_data = _C.bilateral_filter(input, spatial_sigma, color_sigma, fast_approx)
         return output_data
 
     @staticmethod
     def backward(ctx, grad_output):
-        spatial_sigma, color_sigma, fast_approx = ctx.saved_variables
+        spatial_sigma = ctx.spatial_sigma
+        color_sigma = ctx.color_sigma
+        fast_approx = ctx.fast_approx
         grad_input = _C.bilateral_filter(grad_output, spatial_sigma, color_sigma, fast_approx)
         return grad_input
 
@@ -81,7 +85,6 @@ class PHLFilter(torch.autograd.Function):
 
     @staticmethod
     def forward(ctx, input, features, sigmas=None):
-
         scaled_features = features
         if sigmas is not None:
             for i in range(features.size(1)):
@@ -93,6 +96,6 @@ class PHLFilter(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        scaled_features = ctx.saved_variables
-        grad_input = PHLFilter.scale(grad_output, scaled_features)
-        return grad_input
+        scaled_features, = ctx.saved_variables
+        grad_input = _C.phl_filter(grad_output, scaled_features)
+        return grad_input, None
