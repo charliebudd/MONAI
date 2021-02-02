@@ -14,6 +14,7 @@ limitations under the License.
 #include <torch/extension.h>
 
 #include "filtering/filtering.h"
+#include "geometric/geometric.h"
 #include "lltm/lltm.h"
 #include "resample/pushpull.h"
 #include "utils/resample_utils.h"
@@ -22,6 +23,10 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
   // filtering
   m.def("bilateral_filter", &BilateralFilter, "Bilateral Filter");
   m.def("phl_filter", &PermutohedralFilter, "Permutohedral Filter");
+
+  // geometric
+  m.def("calculate_edge_weights", &CalculateEdgeWeights, "Calculate Edge Weights");
+  m.def("graph_cut", &GraphCut, "Graph Cut");
 
   // lltm
   m.def("lltm_forward", &lltm_forward, "LLTM forward");
