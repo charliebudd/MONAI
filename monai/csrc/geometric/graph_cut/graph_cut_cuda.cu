@@ -5,25 +5,14 @@
 
 #include <iostream>
 
-#define BLOCK_SIZE 32
-#define CAPACITY_BITS 4
-#define CAPACITY_MASK 0xF
-#define HEIGHT_MAX ((1 << CAPACITY_BITS) - 1)
+#define BLOCK_SIZE 3
+#define HEIGHT_MAX 15
+#define ERR_CHK //py::print(cudaGetErrorString(cudaDeviceSynchronize()));
 
 __constant__ int c_width;
 __constant__ int c_height;
 __constant__ int c_element_count;
 __constant__ int c_block_count_x;
-
-__device__ inline int get_edge(int edges, int index)
-{
-    return (edges >> (index * CAPACITY_BITS)) & CAPACITY_MASK;
-}
-
-__device__ inline int set_edge(int edges, int index, int edge)
-{
-    return edges |= (edge & CAPACITY_MASK) << index * CAPACITY_BITS;
-}
 
 //###########################################
 // Initialises the excess fow and the active block map
@@ -47,16 +36,11 @@ __global__ void InitialisationKernel(const float* edge_weights, const float* sou
     int home = x + y * c_width;
 
     // writing edge capacities
-    int edges = 0;
-
     #pragma unroll
     for (int i = 0; i < 4; i++)
     {
-        int capacity = edge_weights[home + i * c_element_count] * HEIGHT_MAX;
-        edges = set_edge(edges, i, capacity);
+        edge_capacities[home + i * c_element_count] = edge_weights[home + i * c_element_count] * HEIGHT_MAX;
     }
-
-    edge_capacities[home] = edges;
 
     // initialising excess flow
     excess_flow[home] = (sink_weights[home] - source_weights[home]) * HEIGHT_MAX;
@@ -92,11 +76,10 @@ __global__ void PushKernel(const int* active_block_map, const int* height, int* 
     int home = x + y * c_width;
     int home_height = height[home];
     int home_flow = excess_flow[home];
-    int home_edges = edge_capacities[home];
 
     if (home_height > HEIGHT_MAX || home_flow <= 0) return;
     
-    bool is_edge[4] = {y == c_height, x == c_width, y == 0, x == 0};
+    bool is_edge[4] = {y == c_height-1, x == c_width-1, y == 0, x == 0};
     int offsets[4] = {c_width, 1, -c_width, -1};
 
     #pragma unroll
@@ -106,24 +89,19 @@ __global__ void PushKernel(const int* active_block_map, const int* height, int* 
 
         if (!is_edge[i] && height[neighbour] == home_height - 1) 
         {
-            int neighbour_edges = edge_capacities[neighbour];
+            int home_to_neighbour = home + i * c_element_count;
+            int neighbour_to_home = neighbour + ((i + 2) & 0x11) * c_element_count;
 
-            int home_edge = get_edge(home_edges, i);
-            int neighbour_edge = get_edge(neighbour_edges, i);
-
+            int home_edge = edge_capacities[home_to_neighbour];
             float edge_flow = min(home_edge, home_flow);
+            
+            atomicSub(edge_capacities + home_to_neighbour, edge_flow);
+            atomicAdd(edge_capacities + neighbour_to_home, edge_flow);
 
-            home_edges = set_edge(home_edges, i, home_edge - edge_flow);
-            neighbour_edges = set_edge(neighbour_edges, i, neighbour_edge + edge_flow);
-
-            excess_flow[home] -= edge_flow;
-            excess_flow[neighbour] += edge_flow;
-
-            edge_capacities[neighbour] = neighbour_edges;
+            atomicSub(excess_flow + home, edge_flow);
+            atomicAdd(excess_flow + neighbour, edge_flow);
         }
     }
-
-    edge_capacities[home] = home_edges;
 }
 
 //###########################################
@@ -150,11 +128,10 @@ __global__ void RelabelKernel(const int* active_block_map, const int* height_rea
     int home = x + y * c_width;
     int home_height = height_read[home];
     int home_flow = excess_flow[home];
-    int home_edges = edge_capacities[home];
 
     if (home_height > HEIGHT_MAX || home_flow <= 0) return;
 
-    bool is_edge[4] = {y == c_height, x == c_width, y == 0, x == 0};
+    bool is_edge[4] = {y == c_height-1, x == c_width-1, y == 0, x == 0};
     int offsets[4] = {c_width, 1, -c_width, -1};
 
     int min_height = HEIGHT_MAX;
@@ -162,7 +139,7 @@ __global__ void RelabelKernel(const int* active_block_map, const int* height_rea
     #pragma unroll
     for (int i = 0; i < 4; i++) 
     {
-        if (!is_edge[i] && get_edge(home_edges, i) > 0)
+        if (!is_edge[i] && edge_capacities[home + i * c_element_count] > 0)
         {
             int neighbour = home + offsets[i];
             min_height = min(min_height, height_read[neighbour]+1);
@@ -226,18 +203,18 @@ __global__ void TEMP_OUTPUT_DUMP(const int* height, const int* excess_flow, cons
     int home = x + y * c_width;
     int home_height = height[home];
     int home_flow = excess_flow[home];
-    int home_edges = edge_capacities[home];
-
+    
     bool active = home_height <= HEIGHT_MAX && home_flow > 0;
-    bool any_active = __syncthreads_or(active);
+    int any_active = __syncthreads_or(active);
 
     output[home + 0 * c_element_count] = home_flow;
     output[home + 1 * c_element_count] = home_height;
-    output[home + 2 * c_element_count] = get_edge(home_edges, 0);
-    output[home + 3 * c_element_count] = get_edge(home_edges, 1);
-    output[home + 4 * c_element_count] = get_edge(home_edges, 2);
-    output[home + 5 * c_element_count] = get_edge(home_edges, 3);
-    output[home + 6 * c_element_count] = any_active ? 1 : 0;
+    output[home + 2 * c_element_count] = edge_capacities[home + 0 * c_element_count];
+    output[home + 3 * c_element_count] = edge_capacities[home + 1 * c_element_count];
+    output[home + 4 * c_element_count] = edge_capacities[home + 2 * c_element_count];
+    output[home + 5 * c_element_count] = edge_capacities[home + 3 * c_element_count];
+    output[home + 6 * c_element_count] = any_active;
+    output[home + 7 * c_element_count] = active;
 }
 
 //###########################################
@@ -266,7 +243,7 @@ torch::Tensor GraphCut_Cuda(torch::Tensor edge_weights_tensor, torch::Tensor sou
     cudaMalloc(&active_block_map, block_count * sizeof(int));
 
     int *edge_capacities;
-    cudaMalloc(&edge_capacities, element_count * sizeof(int));
+    cudaMalloc(&edge_capacities, 4 * element_count * sizeof(int));
 
     int *excess_flow;
     cudaMalloc(&excess_flow, element_count * sizeof(int));
@@ -286,31 +263,39 @@ torch::Tensor GraphCut_Cuda(torch::Tensor edge_weights_tensor, torch::Tensor sou
     InitialisationKernel<<<active_block_count, block_thread_count>>>(edge_weights, source_weights, sink_weights, edge_capacities, excess_flow, active_block_map);
 
     int stuck_counter = 0;
+    int stuck_limit = 100;
 
     // Iterating while any blocks are active...
-    while (active_block_count > 0 && stuck_counter < 50)
+    while (active_block_count > 0)
     {
-        py::print(active_block_count);
+        py::print("active block count: ", active_block_count);
 
         PushKernel<<<active_block_count, block_thread_count>>>(active_block_map, height_read, edge_capacities, excess_flow);
+        ERR_CHK
 
         RelabelKernel<<<active_block_count, block_thread_count>>>(active_block_map, height_read, edge_capacities, excess_flow, height_write);
         height_swap = height_read; 
         height_read = height_write; 
         height_write = height_swap;
+        ERR_CHK
 
         ActiveBlockCheckKernel<<<block_count, block_thread_count>>>(height_read, excess_flow, active_block_map);
+        ERR_CHK
 
         //######################################
         // host side stream compaction for now
 
         cudaMemcpy(active_block_map_host, active_block_map, block_count * sizeof(int), cudaMemcpyDeviceToHost);
+        ERR_CHK
 
         int previous_active_block_count = active_block_count;
         active_block_count = 0;
 
+        py::print("block activations...");
         for (int i = 0; i < block_count; i++)
         {
+            py::print(i, ": ", active_block_map_host[i] != -1);
+
             if(active_block_map_host[i] != -1) 
             {
                 active_block_map_host[active_block_count] = active_block_map_host[i];
@@ -319,12 +304,19 @@ torch::Tensor GraphCut_Cuda(torch::Tensor edge_weights_tensor, torch::Tensor sou
         }
 
         cudaMemcpy(active_block_map, active_block_map_host, active_block_count * sizeof(int), cudaMemcpyHostToDevice);
+        ERR_CHK
         
         //######################################
 
         if (active_block_count == previous_active_block_count)
         {
             stuck_counter++;
+
+            if (stuck_counter > stuck_limit)
+            {
+                py::print("Iteration Limit Reached. Escaping...");
+                break;
+            }
         }
         else
         {
@@ -332,7 +324,10 @@ torch::Tensor GraphCut_Cuda(torch::Tensor edge_weights_tensor, torch::Tensor sou
         }
     }
 
-    torch::Tensor output_tensor = torch::zeros({1, 7, width, height}, torch::dtype(torch::kInt32).device(torch::kCUDA, 0));
+    py::print("done");
+    ERR_CHK
+
+    torch::Tensor output_tensor = torch::zeros({1, 8, width, height}, torch::dtype(torch::kInt32).device(torch::kCUDA, 0));
 
     TEMP_OUTPUT_DUMP<<<block_count, block_thread_count>>>(height_read, excess_flow, edge_capacities, output_tensor.data_ptr<int>());
 
