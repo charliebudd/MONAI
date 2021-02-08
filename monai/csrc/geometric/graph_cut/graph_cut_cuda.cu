@@ -6,7 +6,7 @@
 #include <iostream>
 
 #define BLOCK_SIZE 32
-#define HEIGHT_MAX 15
+#define HEIGHT_MAX 32
 #define ERR_CHK //py::print(cudaGetErrorString(cudaDeviceSynchronize()));
 
 __constant__ int c_width;
@@ -84,29 +84,44 @@ __global__ void PushKernel(const int* active_block_map, const int* height, int* 
     int offsets[4] = {1, c_width, -1, -c_width};
     int redirect[4] = {2, 3, 0, 1};
     
+    int edge_flows[4] = {0, 0, 0, 0};
+    int total_flow = 0;
+
     #pragma unroll
-    for (int i = 0; i < 4 && home_flow > 0; i++) 
+    for (int i = 0; i < 4; i++) 
     {
         int neighbour = home + offsets[i];
 
         if (!is_edge[i] && height[neighbour] == home_height - 1) 
         {
             int home_to_neighbour = home + i * c_element_count;
+            int home_edge = edge_capacities[home_to_neighbour];
+
+            edge_flows[i] = home_edge;
+            total_flow += home_edge;
+        }
+    }
+
+    float normalisation_factor = (float)home_flow / total_flow; 
+
+    #pragma unroll
+    for (int i = 0; i < 4; i++) 
+    {
+        int neighbour = home + offsets[i];
+
+        if(edge_flows[i] != 0)
+        {
+            int home_to_neighbour = home + i * c_element_count;
             int neighbour_to_home = neighbour + redirect[i] * c_element_count;
 
-            int home_edge = edge_capacities[home_to_neighbour];
-            float edge_flow = min(home_edge, home_flow);
-            
-            if(edge_flow != 0)
-            {
-                atomicSub(edge_capacities + home_to_neighbour, edge_flow);
-                atomicAdd(edge_capacities + neighbour_to_home, edge_flow);
-    
-                atomicSub(excess_flow + home, edge_flow);
-                atomicAdd(excess_flow + neighbour, edge_flow);
+            int edge_flow = int(normalisation_factor * edge_flows[i]);
+            edge_flow = min(edge_flows[i], edge_flow);
 
-                home_flow -= edge_flow;
-            }
+            atomicSub(edge_capacities + home_to_neighbour, edge_flow);
+            atomicAdd(edge_capacities + neighbour_to_home, edge_flow);
+
+            atomicSub(excess_flow + home, edge_flow);
+            atomicAdd(excess_flow + neighbour, edge_flow);
         }
     }
 }
