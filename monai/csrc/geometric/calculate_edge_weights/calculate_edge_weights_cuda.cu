@@ -4,6 +4,7 @@
 #include "utils/tensor_description.h"
 
 #define BLOCK_SIZE 32
+#define PI 3.14159265358979323846
 
 __constant__ int c_width;
 __constant__ int c_height;
@@ -25,7 +26,7 @@ __global__ void CalculateEdgeWeightsKernel(const float* input, float* output) {
     #pragma unroll
     for (int i = 0; i < 4; i++){
         float diff = is_edge[i] ? 0 : home_value - input[home + offsets[i]];
-        output[home + i * c_channel_stride] = exp(1-(diff * diff));
+        output[home + i * c_channel_stride] = exp(- 2 * PI * diff * diff);
     }
 }
 
