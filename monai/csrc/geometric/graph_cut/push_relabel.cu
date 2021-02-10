@@ -1,6 +1,8 @@
 #include "push_relabel.cuh"
 #include "utils/tensor_description.h"
 
+#include <ctime>
+
 //###########################################
 // Initialises the excess fow and the active block map
 __global__ void InitialisationKernel(const float* edge_weights, const float* source_weights, const float* sink_weights, int* edge_capacities, int* excess_flow, int* active_block_map) 
@@ -250,8 +252,6 @@ __global__ void GlobalRelabelKernel(int* active_block_map, const int* excess_flo
     } 
 }
 
-//###########################################
-
 __global__ void TEMP_OUTPUT_DUMP(const int* height, const int* excess_flow, const int* edge_capacities, int* output) 
 {
     int block_id = blockIdx.x;
@@ -284,6 +284,7 @@ __global__ void TEMP_OUTPUT_DUMP(const int* height, const int* excess_flow, cons
     output[home + 5 * c_element_count] = edge_capacities[home + 3 * c_element_count];
     output[home + 6 * c_element_count] = any_active;
     output[home + 7 * c_element_count] = active;
+    output[home + 8 * c_element_count] = home_height == -1 ? 1 : 0;
 }
 
 //###########################################
@@ -329,16 +330,21 @@ PushRelabel::PushRelabel(torch::Tensor edge_weights_tensor, torch::Tensor source
 
 torch::Tensor PushRelabel::Execute(int iterations)
 {
-    int iteration_counter = 0;
+    double start, time;
+    
+    //#########################################################
 
     py::print("Push Relabel...");
+    start = clock();
+
+    //#########################################################
+
+    int iteration_counter = 0;
+
     while (active_block_count > 0)
     {
-        py::print(iteration_counter);
-
         if(iteration_counter >= iterations)
         {
-            py::print("Iteration Count Reached. Escaping...");
             break;
         }
         else
@@ -356,25 +362,47 @@ torch::Tensor PushRelabel::Execute(int iterations)
         CompactActiveBlockMap();
     }
 
-    // int iteration = 0;
-    // active_block_count = total_block_count;
+    //#########################################################
 
-    // py::print("Global Relabel...");
-    // while(active_block_count > 0)
-    // {
-    //     py::print(iteration);
+    cudaDeviceSynchronize();
+    time = 1000 * (clock() - start) / CLOCKS_PER_SEC;
 
-    //     cudaMemcpyToSymbol(c_iteration, &iteration, sizeof(int));
+    py::print("iterations: ", iteration_counter);
+    py::print("time: ", time, "ms");
+    py::print("");
 
-    //     GlobalRelabelKernel<<<total_block_count, block_thread_count>>>(active_block_map, excess_flow, edge_capacities, height_read, height_write);
-    //     SwapHeightBuffer();
+    //#########################################################
 
-    //     CompactActiveBlockMap();
+    py::print("Global Relabel...");
+    start = clock();
+    
+    //#########################################################
 
-    //     iteration++;
-    // }
+    int iteration = 0;
+    active_block_count = total_block_count;
 
-    torch::Tensor output_tensor = torch::zeros({1, 8, width, height}, torch::dtype(torch::kInt32).device(torch::kCUDA, 0));
+    while(active_block_count > 0)
+    {
+        cudaMemcpyToSymbol(c_iteration, &iteration, sizeof(int));
+        GlobalRelabelKernel<<<total_block_count, block_thread_count>>>(active_block_map, excess_flow, edge_capacities, height_read, height_write);
+        SwapHeightBuffer();
+
+        CompactActiveBlockMap();
+
+        iteration++;
+    }
+
+    //#########################################################
+    cudaDeviceSynchronize();
+    time = 1000 * (clock() - start) / CLOCKS_PER_SEC;
+
+    py::print("iterations: ", iteration);
+    py::print("time: ", time, "ms");
+    py::print("");
+
+    //#########################################################
+
+    torch::Tensor output_tensor = torch::zeros({1, 9, width, height}, torch::dtype(torch::kInt32).device(torch::kCUDA, 0));
 
     TEMP_OUTPUT_DUMP<<<total_block_count, block_thread_count>>>(height_read, excess_flow, edge_capacities, output_tensor.data_ptr<int>());
 
