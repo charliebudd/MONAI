@@ -17,14 +17,9 @@ public:
     PushRelabel(torch::Tensor edge_weights_tensor, torch::Tensor source_weights_tensor, torch::Tensor sink_weights_tensor);
     ~PushRelabel();
 
-    torch::Tensor Execute(int iterations);
+    torch::Tensor Execute(int iterations, int a, int b);
 
 private:
-
-    // void Push();
-
-    // void LocalRelabel();
-    // void GlobalRelabel();
 
     void CompactActiveBlockMap();
     void SwapHeightBuffer();

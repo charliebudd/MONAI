@@ -15,8 +15,8 @@ limitations under the License.
 
 #include <torch/extension.h>
 
-torch::Tensor GraphCut_Cuda(torch::Tensor input_graph, torch::Tensor source_weights, torch::Tensor sink_weights, int iterations);
+torch::Tensor GraphCut_Cuda(torch::Tensor input_graph, torch::Tensor source_weights, torch::Tensor sink_weights, int iterations, int a, int b);
 
-torch::Tensor GraphCut(torch::Tensor input_graph, torch::Tensor source_weights, torch::Tensor sink_weights, int iterations) {
-    return GraphCut_Cuda(input_graph, source_weights, sink_weights, iterations);
+torch::Tensor GraphCut(torch::Tensor input_graph, torch::Tensor source_weights, torch::Tensor sink_weights, int iterations, int a, int b) {
+    return GraphCut_Cuda(input_graph, source_weights, sink_weights, iterations, a, b);
 }

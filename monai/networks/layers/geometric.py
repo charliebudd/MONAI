@@ -51,6 +51,6 @@ class GraphCut(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, input_graph, source_weights, sink_weights, iterations):
-        output_segmentation =  _C.graph_cut(input_graph, source_weights, sink_weights, iterations)
+    def forward(ctx, input_graph, source_weights, sink_weights, iterations, a, b):
+        output_segmentation =  _C.graph_cut(input_graph, source_weights, sink_weights, iterations, a, b)
         return output_segmentation
