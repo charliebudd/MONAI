@@ -25,8 +25,8 @@ limitations under the License.
 #define GMM_COUNT (MIXTURE_COUNT * MIXTURE_SIZE)
 
 
-void learn_cpu(const float* input, const int* labels, float* gmm, float* scratch_memory, unsigned int batch_count, unsigned int element_count);
-void apply_cpu(const float* gmm, const float* input, float* output, unsigned int batch_count, unsigned int element_count);
+void learn_cpu(const float* features, const float* weights, float* gmm, float* scratch_memory, unsigned int batch_count, unsigned int element_count);
+void apply_cpu(const float* gmm, const float* features, float* output, unsigned int batch_count, unsigned int element_count);
 
-void learn_cuda(const float* input, const int* labels, float* gmm, float* scratch_memory, unsigned int batch_count, unsigned int element_count);
-void apply_cuda(const float* gmm, const float* input, float* output, unsigned int batch_count, unsigned int element_count);
+void learn_cuda(const float* features, const float* weights, float* gmm, float* scratch_memory, unsigned int batch_count, unsigned int element_count);
+void apply_cuda(const float* gmm, const float* features, float* output, unsigned int batch_count, unsigned int element_count);
