@@ -215,7 +215,7 @@ class PermutohedralLattice {
    *   im : image to be bilateral-filtered.
    *  ref : reference image whose edges are to be respected.
    */
-  static void filter(scalar_t* data, scalar_t* features, int dataChannels, int featureChannels, int elementCount) {
+  static void filter(scalar_t* data, scalar_t* features, int dataChannels, int featureChannels, int elementCount, bool backwards) {
     // Create lattice
     PermutohedralLattice lattice(featureChannels, dataChannels + 1, elementCount);
 
@@ -233,7 +233,7 @@ class PermutohedralLattice {
     }
 
     // Blur the lattice
-    lattice.blur();
+    lattice.blur(backwards);
 
     // Slice from the lattice
     lattice.beginSlice();
@@ -410,7 +410,7 @@ class PermutohedralLattice {
   }
 
   /* Performs a Gaussian blur along each projected axis in the hyperplane. */
-  void blur() {
+  void blur(bool backwards) {
     // Prepare arrays
     short* neighbor1 = new short[d + 1];
     short* neighbor2 = new short[d + 1];
@@ -423,7 +423,10 @@ class PermutohedralLattice {
       zero[k] = 0;
 
     // For each of d+1 axes,
-    for (int j = 0; j <= d; j++) {
+    for (int iter = 0; iter <= d; iter++) {
+
+      int j = backwards ? d - iter : iter;
+
       // For each vertex in the lattice,
       for (int i = 0; i < hashTable.size(); i++) { // blur point i in dimension j
         short* key = hashTable.getKeys() + i * (d); // keys to current vertex
@@ -452,8 +455,11 @@ class PermutohedralLattice {
           vp1 = zero;
 
         // Mix values of the three vertices
-        for (int k = 0; k < vd; k++)
-          newVal[k] = (0.25f * vm1[k] + 0.5f * oldVal[k] + 0.25f * vp1[k]);
+        if (backwards)
+        {
+          for (int k = 0; k < vd; k++)
+            newVal[k] = (0.25f * vm1[k] + 0.5f * oldVal[k] + 0.25f * vp1[k]);
+        }
       }
       scalar_t* tmp = newValue;
       newValue = oldValue;
@@ -494,9 +500,9 @@ class PermutohedralLattice {
 };
 
 template <typename scalar_t>
-void PermutohedralCPU(scalar_t* data, scalar_t* features, int dataChannels, int featureChannels, int elementCount) {
-  PermutohedralLattice<scalar_t>::filter(data, features, dataChannels, featureChannels, elementCount);
+void PermutohedralCPU(scalar_t* data, scalar_t* features, int dataChannels, int featureChannels, int elementCount, bool backwards) {
+  PermutohedralLattice<scalar_t>::filter(data, features, dataChannels, featureChannels, elementCount, backwards);
 }
 
-template void PermutohedralCPU(float* data, float* features, int dataChannels, int featureChannels, int elementCount);
-template void PermutohedralCPU(double* data, double* features, int dataChannels, int featureChannels, int elementCount);
+template void PermutohedralCPU(float* data, float* features, int dataChannels, int featureChannels, int elementCount, bool backwards);
+template void PermutohedralCPU(double* data, double* features, int dataChannels, int featureChannels, int elementCount, bool backwards);

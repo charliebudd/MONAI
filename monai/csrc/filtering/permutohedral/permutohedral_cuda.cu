@@ -455,7 +455,7 @@ __global__ static void slice(
 }
 
 template <typename scalar_t, int vd, int pd>
-void PermutohedralCuda(scalar_t* values, scalar_t* positions, int elementCount, bool accurate) {
+void PermutohedralCuda(scalar_t* values, scalar_t* positions, int elementCount, bool accurate, bool backwards) {
   scalar_t blurVariance = accurate ? 0.5 : 0;
 
   scalar_t* scaleFactor;
@@ -513,7 +513,10 @@ void PermutohedralCuda(scalar_t* values, scalar_t* positions, int elementCount, 
     cudaMalloc(&newValues, elementCount * (pd + 1) * (vd + 1) * sizeof(scalar_t));
     cudaMemset(newValues, 0, elementCount * (pd + 1) * (vd + 1) * sizeof(scalar_t));
 
-    for (int color = 0; color <= pd; color++) {
+    for (int iter = 0; iter <= pd; iter++) {
+
+      int color = backwards ? pd - iter : iter;
+
       blur<scalar_t, pd, vd>
           <<<cleanBlocks, cleanBlockSize>>>(elementCount * (pd + 1), newValues, matrix, color, table_values);
 
@@ -531,7 +534,7 @@ void PermutohedralCuda(scalar_t* values, scalar_t* positions, int elementCount, 
   cudaFree(table_values);
 }
 
-#define DECLARATION(dc, fc)                                                                                         \
-  template void PermutohedralCuda<float, dc, fc>(float* values, float* positions, int elementCount, bool accurate); \
-  template void PermutohedralCuda<double, dc, fc>(double* values, double* positions, int elementCount, bool accurate);
+#define DECLARATION(dc, fc)                                                                                                           \
+  template void PermutohedralCuda<float, dc, fc>(float* values, float* positions, int elementCount, bool accurate, bool backwards);   \
+  template void PermutohedralCuda<double, dc, fc>(double* values, double* positions, int elementCount, bool accurate, bool backwards);
 DO_FOR_AB(DECLARATION, 16, 19)

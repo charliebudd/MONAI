@@ -16,8 +16,7 @@ limitations under the License.
 
 #include "permutohedral.h"
 
-torch::Tensor PermutohedralFilter(torch::Tensor input, torch::Tensor features) {
-  input = input.contiguous();
+torch::Tensor PermutohedralFilter(torch::Tensor input, torch::Tensor features, bool backwards) {
 
   int batchCount = input.size(0);
   int batchStride = input.stride(0);
@@ -27,8 +26,8 @@ torch::Tensor PermutohedralFilter(torch::Tensor input, torch::Tensor features) {
 
 // movedim not support in torch < 1.7.1
 #if MONAI_TORCH_VERSION >= 10701
-  torch::Tensor data = input.clone().movedim(1, -1).contiguous();
-  features = features.movedim(1, -1).contiguous();
+  torch::Tensor data = input.clone().movedim(1, -1);
+  features = features.movedim(1, -1);
 #else
   torch::Tensor data = input.clone();
   features = features;
@@ -37,23 +36,24 @@ torch::Tensor PermutohedralFilter(torch::Tensor input, torch::Tensor features) {
     data = data.transpose(i, i + 1);
     features = features.transpose(i, i + 1);
   }
+#endif
 
+  input = input.contiguous();
   data = data.contiguous();
   features = features.contiguous();
-#endif
 
 #ifdef WITH_CUDA
   if (torch::cuda::is_available() && data.is_cuda()) {
     CHECK_CONTIGUOUS_CUDA(data);
 
-#define CASE(dc, fc)                                                                                                  \
-  AT_DISPATCH_FLOATING_TYPES(data.scalar_type(), "PermutohedralCuda", ([&] {                                          \
-                               for (int batchIndex = 0; batchIndex < batchCount; batchIndex++) {                      \
-                                 scalar_t* offsetData = data.data_ptr<scalar_t>() + batchIndex * batchStride;         \
-                                 scalar_t* offsetFeatures =                                                           \
-                                     features.data_ptr<scalar_t>() + batchIndex * fc * elementCount;                  \
-                                 PermutohedralCuda<scalar_t, dc, fc>(offsetData, offsetFeatures, elementCount, true); \
-                               }                                                                                      \
+#define CASE(dc, fc)                                                                                                              \
+  AT_DISPATCH_FLOATING_TYPES(data.scalar_type(), "PermutohedralCuda", ([&] {                                                      \
+                               for (int batchIndex = 0; batchIndex < batchCount; batchIndex++) {                                  \
+                                 scalar_t* offsetData = data.data_ptr<scalar_t>() + batchIndex * batchStride;                     \
+                                 scalar_t* offsetFeatures =                                                                       \
+                                     features.data_ptr<scalar_t>() + batchIndex * fc * elementCount;                              \
+                                 PermutohedralCuda<scalar_t, dc, fc>(offsetData, offsetFeatures, elementCount, true, backwards);  \
+                               }                                                                                                  \
                              }));
     SWITCH_AB(CASE, 16, 19, channelCount, featureCount);
 
@@ -64,7 +64,7 @@ torch::Tensor PermutohedralFilter(torch::Tensor input, torch::Tensor features) {
           for (int batchIndex = 0; batchIndex < batchCount; batchIndex++) {
             scalar_t* offsetData = data.data_ptr<scalar_t>() + batchIndex * batchStride;
             scalar_t* offsetFeatures = features.data_ptr<scalar_t>() + batchIndex * featureCount * elementCount;
-            PermutohedralCPU<scalar_t>(offsetData, offsetFeatures, channelCount, featureCount, elementCount);
+            PermutohedralCPU<scalar_t>(offsetData, offsetFeatures, channelCount, featureCount, elementCount, backwards);
           }
         }));
 #ifdef WITH_CUDA

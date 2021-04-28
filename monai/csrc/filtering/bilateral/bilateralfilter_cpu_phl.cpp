@@ -62,7 +62,7 @@ void BilateralFilterPHLCpu(
     }
 
     // Filtering data with respect to the features.
-    PermutohedralCPU<scalar_t>(data, features, desc.channelCount, featureChannels, desc.channelStride);
+    PermutohedralCPU<scalar_t>(data, features, desc.channelCount, featureChannels, desc.channelStride, false);
 
     // Writing output tensor.
     for (int i = 0; i < desc.channelStride; i++) {

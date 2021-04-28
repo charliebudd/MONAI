@@ -114,7 +114,7 @@ void BilateralFilterPHLCuda(
     scalar_t* offsetData = data + batchIndex * desc.batchStride;
     scalar_t* offsetFeatures = features + batchIndex * featureChannelCount * desc.channelStride;
 
-    PermutohedralCuda<scalar_t, C, C + D>(offsetData, offsetFeatures, desc.channelStride, true);
+    PermutohedralCuda<scalar_t, C, C + D>(offsetData, offsetFeatures, desc.channelStride, true, false);
   }
 
   // Writing output
