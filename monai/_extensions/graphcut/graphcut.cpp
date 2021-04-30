@@ -17,23 +17,33 @@ limitations under the License.
 
 using namespace torch::indexing;
 
-torch::Tensor graphcut(torch::Tensor input_tensor, torch::Tensor weights_tensor)
+torch::Tensor graphcut(torch::Tensor image_tensor, torch::Tensor weights_tensor)
 {
-    torch::Tensor output_tensor = torch::empty_like(input_tensor.narrow(1, 0, 1));
-
+    uint batch_count = image_tensor.size(0);
+    uint element_count = image_tensor.stride(1);
     uint sizes[DIMENSION_COUNT];
-    uint element_count = input_tensor.stride(1);
+    uint strides[DIMENSION_COUNT];
 
     for (int i=0; i < DIMENSION_COUNT; i++)
     {
-        sizes[i] = input_tensor.size(i+2);
+        sizes[i] = image_tensor.size(i+2);
+        strides[i] = image_tensor.stride(i+2);
     }
 
-    float* input = input_tensor.data_ptr<float>();
+    int dim = image_tensor.dim();
+    long int* output_size = new long int[dim];
+    memcpy(output_size, image_tensor.sizes().data(), dim * sizeof(long int));
+    output_size[1] = CONNECTION_COUNT;
+    torch::Tensor output_tensor = torch::empty(c10::IntArrayRef(output_size, dim), torch::dtype(image_tensor.dtype()).device(image_tensor.device()));
+    delete output_size;
+
+    // torch::Tensor output_tensor = torch::empty_like(image_tensor.narrow(1, 0, 1).expand({-1, CONNECTION_COUNT, -1, -1})).cuda();
+
+    float* image = image_tensor.data_ptr<float>();
     float* weights = weights_tensor.data_ptr<float>();
     float* output = output_tensor.data_ptr<float>();
 
-    graphcut_cuda(input, weights, output, sizes, element_count);
+    graphcut_cuda(image, weights, output, batch_count, element_count, sizes, strides);
 
     return output_tensor;
 }

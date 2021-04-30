@@ -15,7 +15,7 @@ limitations under the License.
 
 #include "graphcut.h"
 
-void graphcut_cpu(const float* inputs, const float* weights, float* output, const uint sizes[DIMENSION_COUNT], const uint element_count)
+void graphcut_cpu(const float* image, const float* weights, float* output, const uint batch_count, const uint element_count, const uint sizes[DIMENSION_COUNT], const uint strides[DIMENSION_COUNT])
 {
     throw std::invalid_argument("Graphcut recieved a cpu tensor but is not yet implemented for the cpu");
 }
