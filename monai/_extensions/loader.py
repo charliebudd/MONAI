@@ -9,96 +9,86 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import signal
+import platform
+from _thread import interrupt_main
+from contextlib import contextmanager
 from glob import glob
-from os import makedirs, path, remove
-from shutil import rmtree
-from sys import platform
-from time import sleep
+from os import path
+from threading import Timer
+from typing import Optional
 
-from torch import cuda
-from torch.utils.cpp_extension import load
+import torch
+
+from monai.utils.module import get_torch_version_tuple, optional_import
 
 dir_path = path.dirname(path.realpath(__file__))
-lock_max_wait = 30
-lock_check_interval = 5
 
 
-def load_module(module_name, defines=None, verbose_build=False):
+@contextmanager
+def timeout(time, message):
+    timer = None
+    try:
+        timer = Timer(time, interrupt_main)
+        timer.daemon = True
+        yield timer.start()
+    except KeyboardInterrupt as e:
+        if timer is not None and timer.is_alive():
+            raise e  # interrupt from user?
+        raise TimeoutError(message)
+    finally:
+        if timer is not None:
+            try:
+                timer.cancel()
+            finally:
+                pass
+
+
+def load_module(
+    module_name: str, defines: Optional[dict] = None, verbose_build: bool = False, build_timeout: int = 300
+):
     """
-    Handles the loading of c++ extention modules.
+    Handles the loading of c++ extension modules.
 
     Args:
-        module_name: Name of the module to load. Must match the name of the relevant source directory in the _extensions directory.
+        module_name: Name of the module to load.
+            Must match the name of the relevant source directory in the `_extensions` directory.
         defines: Dictionary containing names and values of compilation defines.
         verbose_build: Set to true to enable build logging.
+        build_timeout: Time in seconds before the build will throw an exception to prevent hanging.
     """
 
     # Ensuring named module exists in _extensions directory.
     module_dir = path.join(dir_path, module_name)
-    assert path.exists(module_dir), f"No extention module named {module_name}"
+    if not path.exists(module_dir):
+        raise ValueError(f"No extension module named {module_name}")
 
-    # Naming build.
-    build_tag = "" if defines is None else "_".join(str(v) for v in defines.values())
-    build_name = "build" if build_tag == "" else f"build_{build_tag}"
-    module_name = module_name if build_tag == "" else f"{module_name}_{build_tag}"
-    build_dir = path.join(module_dir, "build", build_name)
-
-    # Ensuring build directory exists.
-    if not path.exists(build_dir):
-        makedirs(build_dir)
+    platform_str = f"_{platform.system()}_{platform.python_version()}_"
+    platform_str += "".join(f"{v}" for v in get_torch_version_tuple()[:2])
+    # Adding configuration to module name.
+    if defines is not None:
+        module_name = "_".join([module_name] + [f"{v}" for v in defines.values()])
 
     # Gathering source files.
-    source = glob(path.join(module_dir, "**/*.cpp"), recursive=True)
-    if cuda.is_available:
-        source += glob(path.join(module_dir, "**/*.cu"), recursive=True)
+    source = glob(path.join(module_dir, "**", "*.cpp"), recursive=True)
+    if torch.cuda.is_available():
+        source += glob(path.join(module_dir, "**", "*.cu"), recursive=True)
+        platform_str += f"_{torch.version.cuda}"
 
     # Constructing compilation argument list.
-    define_args = [] if defines is None else [f"-D {key}={defines[key]}" for key in defines]
+    define_args = [] if not defines else [f"-D {key}={defines[key]}" for key in defines]
 
-    # Ninja fails to cleanup properly on signal.SIGTSTP (e.g. ctrl+z).
-    # signal.SIGTSTP doesnt exist on windows so we dont have to do anything.
-    if platform != "windows":
-
-        def cleanup_build(signum, frame):
-            # Clearing the build directory.
-            rmtree(build_dir)
-
-            # Reset handler to default.
-            # and raise the signal.
-            signal.signal(signum, signal.SIG_DFL)
-            signal.raise_signal(signum)
-
-        # Set handler to our cleanup function.
-        signal.signal(signal.SIGTSTP, cleanup_build)
-
-    # There still maybe some situations were Ninja does
-    # not clean up properly. Manually waiting here.
-    lock_file = path.join(build_dir, "lock")
-    timer = 0
-
-    while path.exists(lock_file):
-
-        # Give up if we've waited long enough
-        if timer >= lock_max_wait:
-            remove(lock_file)
-
-        # Wait for lock to be freed
-        sleep(lock_check_interval)
-        timer += lock_check_interval
-
-    # This will either run the build or return the existing .so object.
-    module = load(
-        name=module_name,
-        sources=source,
-        extra_cflags=define_args,
-        extra_cuda_cflags=define_args,
-        build_directory=build_dir,
-        verbose=verbose_build,
-    )
-
-    # Reseting the signal handler to default.
-    if platform != "windows":
-        signal.signal(signal.SIGTSTP, signal.SIG_DFL)
+    # Ninja may be blocked by something out of our control.
+    # This will error if the build takes longer than expected.
+    with timeout(build_timeout, "Build appears to be blocked. Is there a stopped process building the same extension?"):
+        load, _ = optional_import("torch.utils.cpp_extension", name="load")  # main trigger some JIT config in pytorch
+        # This will either run the build or return the existing .so object.
+        name = module_name + platform_str.replace(".", "_")
+        module = load(
+            name=name,
+            sources=source,
+            extra_cflags=define_args,
+            extra_cuda_cflags=define_args,
+            verbose=verbose_build,
+        )
 
     return module

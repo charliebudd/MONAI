@@ -1,11 +1,18 @@
 name: build
 
 on:
-  # quick tests for every pull request
+  # quick tests for pull requests and the releasing branches
   push:
     branches:
-      - master
+      - dev
+      - main
+      - releasing/*
   pull_request:
+
+concurrency:
+  # automatically cancel the previously triggered workflows when there's a newer version
+  group: build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # caching of these jobs:
@@ -80,16 +87,10 @@ jobs:
     - if: runner.os == 'windows'
       name: Install torch cpu from pytorch.org (Windows only)
       run: |
-        python -m pip install torch==1.8.1+cpu torchvision==0.9.1+cpu -f https://download.pytorch.org/whl/torch_stable.html
-        # min. requirements for windows instances
-        python -c "f=open('requirements-dev.txt', 'r'); txt=f.readlines(); f.close(); print(txt); f=open('requirements-dev.txt', 'w'); f.writelines(txt[1:12]); f.close()"
-    - if: runner.os == 'macos'
-      name: Remove cucim installation (Mac only)
-      run: |
-        python -c "f=open('requirements-dev.txt', 'r'); txt=f.readlines(); f.close(); print(txt); f=open('requirements-dev.txt', 'w'); f.writelines([t for t in txt if not t.startswith('cucim')]); f.close()"
+        python -m pip install torch==1.9.0+cpu torchvision==0.10.0+cpu -f https://download.pytorch.org/whl/torch_stable.html
     - name: Install the dependencies
       run: |
-        python -m pip install torch==1.8.1 torchvision==0.9.1
+        python -m pip install torch==1.9.0 torchvision==0.10.0
         cat "requirements-dev.txt"
         python -m pip install -r requirements-dev.txt
         python -m pip list
@@ -137,11 +138,11 @@ jobs:
     - if: runner.os == 'windows'
       name: Install torch cpu from pytorch.org (Windows only)
       run: |
-        python -m pip install torch==1.8.1+cpu -f https://download.pytorch.org/whl/torch_stable.html
+        python -m pip install torch==1.9.0+cpu -f https://download.pytorch.org/whl/torch_stable.html
     - name: Install the dependencies
       run: |
         # min. requirements
-        python -m pip install torch==1.8.1
+        python -m pip install torch==1.9.0
         python -m pip install -r requirements-min.txt
         python -m pip list
         BUILD_MONAI=0 python setup.py develop  # no compile of extensions
@@ -159,7 +160,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: [3.6, 3.7]
+        python-version: [3.6, 3.7, 3.8, 3.9]
     timeout-minutes: 40
     steps:
     - uses: actions/checkout@v2
@@ -186,7 +187,7 @@ jobs:
     - name: Install the dependencies
       run: |
         # min. requirements
-        python -m pip install torch==1.8.1
+        python -m pip install torch==1.9.0
         python -m pip install -r requirements-min.txt
         python -m pip list
         BUILD_MONAI=0 python setup.py develop  # no compile of extensions
@@ -204,16 +205,13 @@ jobs:
     strategy:
       matrix:
         environment:
-          - "PT16+CUDA102"
           - "PT16+CUDA110"
           - "PT17+CUDA102"
           - "PT17+CUDA110"
           - "PT18+CUDA102"
           - "PT18+CUDA112"
+          - "PT19+CUDA102"
         include:
-          - environment: PT16+CUDA102
-            pytorch: "torch==1.6.0 torchvision==0.7.0"
-            base: "nvcr.io/nvidia/cuda:10.2-devel-ubuntu18.04"
           - environment: PT16+CUDA110
             # we explicitly set pytorch to -h to avoid pip install error
             pytorch: "-h"
@@ -231,7 +229,10 @@ jobs:
           - environment: PT18+CUDA112
             # we explicitly set pytorch to -h to avoid pip install error
             pytorch: "-h"
-            base: "nvcr.io/nvidia/pytorch:21.02-py3"
+            base: "nvcr.io/nvidia/pytorch:21.04-py3"
+          - environment: PT19+CUDA102
+            pytorch: "torch==1.9.0 torchvision==0.10.0"
+            base: "nvcr.io/nvidia/cuda:10.2-devel-ubuntu18.04"
     container:
       image: ${{ matrix.base }}
       options: --gpus all
@@ -240,9 +241,9 @@ jobs:
     - uses: actions/checkout@v2
     - name: apt install
       run: |
-        if [ ${{ matrix.environment }} = "PT16+CUDA102" ] || \
-           [ ${{ matrix.environment }} = "PT17+CUDA102" ] || \
-           [ ${{ matrix.environment }} = "PT18+CUDA102" ]
+        if [ ${{ matrix.environment }} = "PT17+CUDA102" ] || \
+           [ ${{ matrix.environment }} = "PT18+CUDA102" ] || \
+           [ ${{ matrix.environment }} = "PT19+CUDA102" ]
         then
         PYVER=3.6 PYSFX=3 DISTUTILS=python3-distutils && \
         apt-get update && apt-get install -y --no-install-recommends \
@@ -264,7 +265,8 @@ jobs:
           libboost-test-dev \
           libgoogle-glog-dev \
           libjsoncpp-dev \
-          cmake && \
+          cmake \
+          git && \
         rm -rf /var/lib/apt/lists/* && \
         export PYTHONIOENCODING=utf-8 LC_ALL=C.UTF-8 && \
         rm -f /usr/bin/python && \
@@ -284,25 +286,29 @@ jobs:
         python -m pip list
     - name: Run quick tests (GPU)
       run: |
+        git clone --depth 1 \
+          https://github.com/Project-MONAI/MONAI-extra-test-data.git /MONAI-extra-test-data
+        export MONAI_EXTRA_TEST_DATA="/MONAI-extra-test-data"
         nvidia-smi
-        export LAUNCH_DELAY=$(python -c "import numpy; print(numpy.random.randint(30) * 5)")
+        export LAUNCH_DELAY=$(python -c "import numpy; print(numpy.random.randint(30) * 10)")
         echo "Sleep $LAUNCH_DELAY"
         sleep $LAUNCH_DELAY
         export CUDA_VISIBLE_DEVICES=$(coverage run -m tests.utils)
         echo $CUDA_VISIBLE_DEVICES
-        stop_time=$((LAUNCH_DELAY + $(date +%s)))
-        while [ $(date +%s) -lt $stop_time ]; do
-          python -c 'import torch; torch.rand(5, 3, device=torch.device("cuda:0"))';
-        done
+        trap 'if pgrep python; then pkill python; fi;' ERR
+        python -c $'import torch\na,b=torch.zeros(1,device="cuda:0"),torch.zeros(1,device="cuda:1");\nwhile True:print(a,b)' > /dev/null &
         python -c "import torch; print(torch.__version__); print('{} of GPUs available'.format(torch.cuda.device_count()))"
         python -c 'import torch; print(torch.rand(5, 3, device=torch.device("cuda:0")))'
         python -c "import monai; monai.config.print_config()"
-        BUILD_MONAI=1 ./runtests.sh --quick --unittests
-        if [ ${{ matrix.environment }} = "PT18+CUDA112" ]; then
+        # build for the current self-hosted CI Tesla V100
+        BUILD_MONAI=1 TORCH_CUDA_ARCH_LIST="7.0" ./runtests.sh --quick --unittests
+        if [ ${{ matrix.environment }} = "PT19+CUDA102" ]; then
           # test the clang-format tool downloading once
           coverage run -m tests.clang_format_utils
         fi
         coverage xml
+        if pgrep python; then pkill python; fi
+      shell: bash
     - name: Upload coverage
       uses: codecov/codecov-action@v1
       with:
@@ -339,6 +345,8 @@ jobs:
         python -m pip install torch>=1.5 torchvision
     - name: Test source archive and wheel file
       run: |
+        pip uninstall monai
+        pip list | grep -iv monai
         git fetch --depth=1 origin +refs/tags/*:refs/tags/*
         root_dir=$PWD
         echo "$root_dir"
@@ -364,15 +372,22 @@ jobs:
         rm monai*.whl
 
         # install from tar.gz
-        python -m pip install monai*.tar.gz
+        name=$(ls *.tar.gz | head -n1)
+        echo $name
+        python -m pip install $name[all]
         python -c 'import monai; monai.config.print_config()' 2>&1 | grep -iv "unknown"
         python -c 'import monai; print(monai.__file__)'
-        python -m pip uninstall -y monai
-        rm monai*.tar.gz
 
-        # clean up
-        cd "$root_dir"
-        rm -r "$tmp_dir"
+        # run min tests
+        cp $root_dir/requirements*.txt "$tmp_dir"
+        cp -r $root_dir/tests "$tmp_dir"
+        pwd
+        ls -al
+        python -m pip install -r requirements-dev.txt
+        python -m unittest -v
+      env:
+        QUICKTEST: True
+        shell: bash
 
   build-docs:
     runs-on: ubuntu-latest

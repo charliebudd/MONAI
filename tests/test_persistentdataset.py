@@ -41,18 +41,19 @@ TEST_CASE_2 = [
 TEST_CASE_3 = [None, (128, 128, 128)]
 
 
+class _InplaceXform(Transform):
+    def __call__(self, data):
+        if data:
+            data[0] = data[0] + np.pi
+        else:
+            data.append(1)
+        return data
+
+
 class TestDataset(unittest.TestCase):
     def test_cache(self):
         """testing no inplace change to the hashed item"""
         items = [[list(range(i))] for i in range(5)]
-
-        class _InplaceXform(Transform):
-            def __call__(self, data):
-                if data:
-                    data[0] = data[0] + np.pi
-                else:
-                    data.append(1)
-                return data
 
         with tempfile.TemporaryDirectory() as tempdir:
             ds = PersistentDataset(items, transform=_InplaceXform(), cache_dir=tempdir)

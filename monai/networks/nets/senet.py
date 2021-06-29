@@ -21,6 +21,8 @@ from monai.networks.blocks.convolutions import Convolution
 from monai.networks.blocks.squeeze_and_excitation import SEBottleneck, SEResNetBottleneck, SEResNeXtBottleneck
 from monai.networks.layers.factories import Act, Conv, Dropout, Norm, Pool
 
+__all__ = ["SENet", "SENet154", "SEResNet50", "SEResNet101", "SEResNet152", "SEResNeXt50", "SEResNext101"]
+
 
 class SENet(nn.Module):
     """
@@ -304,6 +306,8 @@ def _load_state_dict(model, arch, progress):
 
 
 class SENet154(SENet):
+    """SENet154 based on `Squeeze-and-Excitation Networks` with optional pretrained support when spatial_dims is 2."""
+
     def __init__(
         self,
         layers: Sequence[int] = (3, 8, 36, 3),
@@ -326,6 +330,8 @@ class SENet154(SENet):
 
 
 class SEResNet50(SENet):
+    """SEResNet50 based on `Squeeze-and-Excitation Networks` with optional pretrained support when spatial_dims is 2."""
+
     def __init__(
         self,
         layers: Sequence[int] = (3, 4, 6, 3),
@@ -356,6 +362,10 @@ class SEResNet50(SENet):
 
 
 class SEResNet101(SENet):
+    """
+    SEResNet101 based on `Squeeze-and-Excitation Networks` with optional pretrained support when spatial_dims is 2.
+    """
+
     def __init__(
         self,
         layers: Sequence[int] = (3, 4, 23, 3),
@@ -384,6 +394,10 @@ class SEResNet101(SENet):
 
 
 class SEResNet152(SENet):
+    """
+    SEResNet152 based on `Squeeze-and-Excitation Networks` with optional pretrained support when spatial_dims is 2.
+    """
+
     def __init__(
         self,
         layers: Sequence[int] = (3, 8, 36, 3),
@@ -412,6 +426,10 @@ class SEResNet152(SENet):
 
 
 class SEResNext50(SENet):
+    """
+    SEResNext50 based on `Squeeze-and-Excitation Networks` with optional pretrained support when spatial_dims is 2.
+    """
+
     def __init__(
         self,
         layers: Sequence[int] = (3, 4, 6, 3),
@@ -442,6 +460,10 @@ class SEResNext50(SENet):
 
 
 class SEResNext101(SENet):
+    """
+    SEResNext101 based on `Squeeze-and-Excitation Networks` with optional pretrained support when spatial_dims is 2.
+    """
+
     def __init__(
         self,
         layers: Sequence[int] = (3, 4, 23, 3),
@@ -469,3 +491,12 @@ class SEResNext101(SENet):
         if pretrained:
             # it only worked when `spatial_dims` is 2
             _load_state_dict(self, "se_resnext101_32x4d", progress)
+
+
+SEnet = Senet = senet = SENet
+SEnet154 = Senet154 = senet154 = SENet154
+SEresnet50 = Seresnet50 = seresnet50 = SEResNet50
+SEresnet101 = Seresnet101 = seresnet101 = SEResNet101
+SEresnet152 = Seresnet152 = seresnet152 = SEResNet152
+SEResNeXt50 = SEresnext50 = Seresnext50 = seresnext50 = SEResNext50
+SEResNeXt101 = SEresnext101 = Seresnext101 = seresnext101 = SEResNext101

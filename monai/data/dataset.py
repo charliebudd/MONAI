@@ -13,7 +13,9 @@
 import collections.abc
 import math
 import pickle
+import shutil
 import sys
+import tempfile
 import threading
 import time
 import warnings
@@ -28,7 +30,7 @@ from torch.utils.data import Dataset as _TorchDataset
 from torch.utils.data import Subset
 
 from monai.data.utils import first, pickle_hashing
-from monai.transforms import Compose, Randomizable, Transform, apply_transform
+from monai.transforms import Compose, Randomizable, ThreadUnsafe, Transform, apply_transform
 from monai.utils import MAX_SEED, get_seed, min_version, optional_import
 
 if TYPE_CHECKING:
@@ -130,13 +132,17 @@ class PersistentDataset(Dataset):
     Note:
         The input data must be a list of file paths and will hash them as cache keys.
 
+        When loading persistent cache content, it can't guarantee the cached data matches current
+        transform chain, so please make sure to use exactly the same non-random transforms and the
+        args as the cache content, otherwise, it may cause unexpected errors.
+
     """
 
     def __init__(
         self,
         data: Sequence,
         transform: Union[Sequence[Callable], Callable],
-        cache_dir: Optional[Union[Path, str]] = None,
+        cache_dir: Optional[Union[Path, str]],
         hash_func: Callable[..., bytes] = pickle_hashing,
     ) -> None:
         """
@@ -149,7 +155,8 @@ class PersistentDataset(Dataset):
                 of pre-computed transformed data tensors. The cache_dir is computed once, and
                 persists on disk until explicitly removed.  Different runs, programs, experiments
                 may share a common cache dir provided that the transforms pre-processing is consistent.
-                If the cache_dir doesn't exist, will automatically create it.
+                If `cache_dir` doesn't exist, will automatically create it.
+                If `cache_dir` is `None`, there is effectively no caching.
             hash_func: a callable to compute hash from data items to be cached.
                 defaults to `monai.data.utils.pickle_hashing`.
 
@@ -161,7 +168,7 @@ class PersistentDataset(Dataset):
         self.hash_func = hash_func
         if self.cache_dir is not None:
             if not self.cache_dir.exists():
-                self.cache_dir.mkdir(parents=True)
+                self.cache_dir.mkdir(parents=True, exist_ok=True)
             if not self.cache_dir.is_dir():
                 raise ValueError("cache_dir must be a directory.")
 
@@ -177,13 +184,13 @@ class PersistentDataset(Dataset):
             random transform object
 
         """
-        if not isinstance(self.transform, Compose):
-            raise ValueError("transform must be an instance of monai.transforms.Compose.")
-        for _transform in self.transform.transforms:
+        for _transform in self.transform.transforms:  # type:ignore
             # execute all the deterministic transforms
             if isinstance(_transform, Randomizable) or not isinstance(_transform, Transform):
                 break
-            item_transformed = apply_transform(_transform, item_transformed)
+            # this is to be consistent with CacheDataset even though it's not in a multi-thread situation.
+            _xform = deepcopy(_transform) if isinstance(_transform, ThreadUnsafe) else _transform
+            item_transformed = apply_transform(_xform, item_transformed)
         return item_transformed
 
     def _post_transform(self, item_transformed):
@@ -236,16 +243,29 @@ class PersistentDataset(Dataset):
             hashfile = self.cache_dir / f"{data_item_md5}.pt"
 
         if hashfile is not None and hashfile.is_file():  # cache hit
-            return torch.load(hashfile)
+            try:
+                return torch.load(hashfile)
+            except PermissionError as e:
+                if sys.platform == "win32":
+                    pass  # windows machine multiprocessing not efficiently supported
+                else:
+                    raise e
 
         _item_transformed = self._pre_transform(deepcopy(item_transformed))  # keep the original hashed
         if hashfile is not None:
-            # NOTE: Writing to ".temp_write_cache" and then using a nearly atomic rename operation
+            # NOTE: Writing to a temporary directory and then using a nearly atomic rename operation
             #       to make the cache more robust to manual killing of parent process
             #       which may leave partially written cache files in an incomplete state
-            temp_hash_file = hashfile.with_suffix(".temp_write_cache")
-            torch.save(_item_transformed, temp_hash_file)
-            temp_hash_file.rename(hashfile)
+            with tempfile.TemporaryDirectory() as tmpdirname:
+                temp_hash_file = Path(tmpdirname) / hashfile.name
+                torch.save(_item_transformed, temp_hash_file)
+                if temp_hash_file.is_file() and not hashfile.is_file():
+                    # On Unix, if target exists and is a file, it will be replaced silently if the user has permission.
+                    # for more details: https://docs.python.org/3/library/shutil.html#shutil.move.
+                    try:
+                        shutil.move(temp_hash_file, hashfile)
+                    except FileExistsError:
+                        pass
         return _item_transformed
 
     def _transform(self, index: int):
@@ -264,7 +284,7 @@ class CacheNTransDataset(PersistentDataset):
         data: Sequence,
         transform: Union[Sequence[Callable], Callable],
         cache_n_trans: int,
-        cache_dir: Optional[Union[Path, str]] = None,
+        cache_dir: Optional[Union[Path, str]],
         hash_func: Callable[..., bytes] = pickle_hashing,
     ) -> None:
         """
@@ -278,7 +298,8 @@ class CacheNTransDataset(PersistentDataset):
                 of pre-computed transformed data tensors. The cache_dir is computed once, and
                 persists on disk until explicitly removed.  Different runs, programs, experiments
                 may share a common cache dir provided that the transforms pre-processing is consistent.
-                If the cache_dir doesn't exist, will automatically create it.
+                If `cache_dir` doesn't exist, will automatically create it.
+                If `cache_dir` is `None`, there is effectively no caching.
             hash_func: a callable to compute hash from data items to be cached.
                 defaults to `monai.data.utils.pickle_hashing`.
 
@@ -301,7 +322,8 @@ class CacheNTransDataset(PersistentDataset):
         for i, _transform in enumerate(self.transform.transforms):
             if i == self.cache_n_trans:
                 break
-            item_transformed = apply_transform(_transform, item_transformed)
+            _xform = deepcopy(_transform) if isinstance(_transform, ThreadUnsafe) else _transform
+            item_transformed = apply_transform(_xform, item_transformed)
         return item_transformed
 
     def _post_transform(self, item_transformed):
@@ -408,6 +430,10 @@ class LMDBDataset(PersistentDataset):
                     new_size = size * 2
                     warnings.warn(f"Resizing the cache database from {int(size) >> 20}MB to {int(new_size) >> 20}MB.")
                     env.set_mapsize(new_size)
+                except lmdb.MapResizedError:
+                    # the mapsize is increased by another process
+                    # set_mapsize with a size of 0 to adopt the new size,
+                    env.set_mapsize(0)
             if not done:  # still has the map full error
                 size = env.info()["map_size"]
                 env.close()
@@ -487,6 +513,14 @@ class CacheDataset(Dataset):
     can be cached. During training, the dataset will load the cached results and run
     ``RandCropByPosNegLabeld`` and ``ToTensord``, as ``RandCropByPosNegLabeld`` is a randomized transform
     and the outcome not cached.
+
+    Note:
+        `CacheDataset` executes non-random transforms and prepares cache content in the main process before
+        the first epoch, then all the subprocesses of DataLoader will read the same cache content in the main process
+        during training. it may take a long time to prepare cache content according to the size of expected cache data.
+        So to debug or verify the program before real training, users can set `cache_rate=0.0` or `cache_num=0` to
+        temporarily skip caching.
+
     """
 
     def __init__(
@@ -542,13 +576,12 @@ class CacheDataset(Dataset):
             idx: the index of the input data sequence.
         """
         item = self.data[idx]
-        if not isinstance(self.transform, Compose):
-            raise ValueError("transform must be an instance of monai.transforms.Compose.")
-        for _transform in self.transform.transforms:
+        for _transform in self.transform.transforms:  # type:ignore
             # execute all the deterministic transforms
             if isinstance(_transform, Randomizable) or not isinstance(_transform, Transform):
                 break
-            item = apply_transform(_transform, item)
+            _xform = deepcopy(_transform) if isinstance(_transform, ThreadUnsafe) else _transform
+            item = apply_transform(_xform, item)
         return item
 
     def _transform(self, index: int):
@@ -564,7 +597,10 @@ class CacheDataset(Dataset):
             raise ValueError("transform must be an instance of monai.transforms.Compose.")
         for _transform in self.transform.transforms:
             if start_run or isinstance(_transform, Randomizable) or not isinstance(_transform, Transform):
-                start_run = True
+                # only need to deep copy data on first non-deterministic transform
+                if not start_run:
+                    start_run = True
+                    data = deepcopy(data)
                 data = apply_transform(_transform, data)
         return data
 
@@ -603,8 +639,10 @@ class SmartCacheDataset(Randomizable, CacheDataset):
         4. Call `shutdown()` when training ends.
 
     Note:
-        This replacement will not work if setting the `multiprocessing_context` of DataLoader to `spawn`
-        or on windows(the default multiprocessing method is `spawn`) and setting `num_workers` greater than 0.
+        This replacement will not work for below cases:
+        1. Set the `multiprocessing_context` of DataLoader to `spawn`.
+        2. Run on windows(the default multiprocessing method is `spawn`) with `num_workers` greater than 0.
+        3. Set the `persistent_workers` of DataLoader to `True` with `num_workers` greater than 0.
 
         If using MONAI workflows, please add `SmartCacheHandler` to the handler list of trainer,
         otherwise, please make sure to call `start()`, `update_cache()`, `shutdown()` during training.
@@ -647,9 +685,11 @@ class SmartCacheDataset(Randomizable, CacheDataset):
         if self._cache is None:
             self._cache = self._fill_cache()
         if self.cache_num >= len(data):
-            warnings.warn("cache_num is greater or equal than dataset length, fall back to regular CacheDataset.")
+            warnings.warn(
+                "cache_num is greater or equal than dataset length, fall back to regular monai.data.CacheDataset."
+            )
         if replace_rate <= 0:
-            raise ValueError("replace_rate must be greater than 0, otherwise, please use CacheDataset.")
+            raise ValueError("replace_rate must be greater than 0, otherwise, please use monai.data.CacheDataset.")
 
         self.num_replace_workers: Optional[int] = num_replace_workers
         if self.num_replace_workers is not None:
@@ -720,11 +760,8 @@ class SmartCacheDataset(Randomizable, CacheDataset):
             if not self._replace_done:
                 return False
 
-            remain_num: int = self.cache_num - self._replace_num
-            for i in range(remain_num):
-                self._cache[i] = self._cache[i + self._replace_num]
-            for i in range(self._replace_num):
-                self._cache[remain_num + i] = self._replacements[i]
+            del self._cache[: self._replace_num]
+            self._cache.extend(self._replacements)
 
             self._start_pos += self._replace_num
             if self._start_pos >= self._total_num:

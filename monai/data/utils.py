@@ -15,10 +15,10 @@ import math
 import os
 import pickle
 import warnings
-from collections import abc, defaultdict
+from collections import defaultdict
 from itertools import product, starmap
 from pathlib import PurePath
-from typing import Any, Dict, Generator, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Dict, Generator, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
 import torch
@@ -36,7 +36,6 @@ from monai.utils import (
     optional_import,
 )
 from monai.utils.enums import Method
-from monai.utils.misc import issequenceiterable
 
 nib, _ = optional_import("nibabel")
 
@@ -65,6 +64,7 @@ __all__ = [
     "sorted_dict",
     "decollate_batch",
     "pad_list_data_collate",
+    "no_collation",
 ]
 
 
@@ -253,10 +253,10 @@ def list_data_collate(batch: Sequence):
     """
     elem = batch[0]
     data = [i for k in batch for i in k] if isinstance(elem, list) else batch
+    key = None
     try:
         elem = batch[0]
-        key = None
-        if isinstance(elem, abc.Mapping):
+        if isinstance(elem, Mapping):
             ret = {}
             for k in elem:
                 key = k
@@ -287,17 +287,18 @@ def list_data_collate(batch: Sequence):
         raise TypeError(re_str)
 
 
-def decollate_batch(data: dict, batch_size: Optional[int] = None) -> List[dict]:
+def decollate_batch(batch, detach: bool = True):
     """De-collate a batch of data (for example, as produced by a `DataLoader`).
 
-    Returns a list of dictionaries. Each dictionary will only contain the data for a given batch.
+    Returns a list of structures with the original tensor's 0-th dimension sliced into elements using `torch.unbind`.
 
     Images originally stored as (B,C,H,W,[D]) will be returned as (C,H,W,[D]). Other information,
     such as metadata, may have been stored in a list (or a list inside nested dictionaries). In
     this case we return the element of the list corresponding to the batch idx.
 
     Return types aren't guaranteed to be the same as the original, since numpy arrays will have been
-    converted to torch.Tensor, and tuples/lists may have been converted to lists of tensors
+    converted to torch.Tensor, sequences may be converted to lists of tensors,
+    mappings may be converted into dictionaries.
 
     For example:
 
@@ -314,42 +315,50 @@ def decollate_batch(data: dict, batch_size: Optional[int] = None) -> List[dict]:
         print(out[0])
         >>> {'image': tensor([[[4.3549e-01...43e-01]]]), 'image_meta_dict': {'scl_slope': 0.0}}
 
+        batch_data = [torch.rand((2,1,10,10)), torch.rand((2,3,5,5))]
+        out = decollate_batch(batch_data)
+        print(out[0])
+        >>> [tensor([[[4.3549e-01...43e-01]]], tensor([[[5.3435e-01...45e-01]]])]
+
+        batch_data = torch.rand((2,1,10,10))
+        out = decollate_batch(batch_data)
+        print(out[0])
+        >>> tensor([[[4.3549e-01...43e-01]]])
+
     Args:
-        data: data to be de-collated.
-        batch_size: number of batches in data. If `None` is passed, try to figure out batch size.
+        batch: data to be de-collated.
+        detach: whether to detach the tensors. Scalars tensors will be detached into number types
+            instead of torch tensors.
     """
-    if not isinstance(data, dict):
-        raise RuntimeError("Only currently implemented for dictionary data (might be trivial to adapt).")
-    if batch_size is None:
-        for v in data.values():
-            if isinstance(v, torch.Tensor):
-                batch_size = v.shape[0]
-                break
-    if batch_size is None:
-        raise RuntimeError("Couldn't determine batch size, please specify as argument.")
-
-    def torch_to_single(d: torch.Tensor):
-        """If input is a torch.Tensor with only 1 element, return just the element."""
-        return d if d.numel() > 1 else d.item()
-
-    def decollate(data: Any, idx: int):
-        """Recursively de-collate."""
-        if isinstance(data, dict):
-            return {k: decollate(v, idx) for k, v in data.items()}
-        if isinstance(data, torch.Tensor):
-            out = data[idx]
-            return torch_to_single(out)
-        if isinstance(data, list):
-            if len(data) == 0:
-                return data
-            if isinstance(data[0], torch.Tensor):
-                return [torch_to_single(d[idx]) for d in data]
-            if issequenceiterable(data[0]):
-                return [decollate(d, idx) for d in data]
-            return data[idx]
-        raise TypeError(f"Not sure how to de-collate type: {type(data)}")
-
-    return [{key: decollate(data[key], idx) for key in data.keys()} for idx in range(batch_size)]
+    if batch is None:
+        return batch
+    if isinstance(batch, (float, int, str, bytes)):
+        return batch
+    if isinstance(batch, torch.Tensor):
+        if detach:
+            batch = batch.detach()
+        if batch.ndim == 0:
+            return batch.item() if detach else batch
+        out_list = torch.unbind(batch, dim=0)
+        if out_list[0].ndim == 0 and detach:
+            return [t.item() for t in out_list]
+        return list(out_list)
+    if isinstance(batch, Mapping):
+        _dict_list = {key: decollate_batch(batch[key], detach) for key in batch}
+        return [dict(zip(_dict_list, item)) for item in zip(*_dict_list.values())]
+    if isinstance(batch, Iterable):
+        item_0 = first(batch)
+        if (
+            not isinstance(item_0, Iterable)
+            or isinstance(item_0, (str, bytes))
+            or (isinstance(item_0, torch.Tensor) and item_0.ndim == 0)
+        ):
+            # Not running the usual list decollate here:
+            # don't decollate ['test', 'test'] into [['t', 't'], ['e', 'e'], ['s', 's'], ['t', 't']]
+            # torch.tensor(0) is iterable but iter(torch.tensor(0)) raises TypeError: iteration over a 0-d tensor
+            return [decollate_batch(b, detach) for b in batch]
+        return [list(item) for item in zip(*(decollate_batch(b, detach) for b in batch))]
+    raise NotImplementedError(f"Unable to de-collate: {batch}, type: {type(batch)}.")
 
 
 def pad_list_data_collate(
@@ -377,6 +386,13 @@ def pad_list_data_collate(
     from monai.transforms.croppad.batch import PadListDataCollate  # needs to be here to avoid circular import
 
     return PadListDataCollate(method, mode)(batch)
+
+
+def no_collation(x):
+    """
+    No any collation operation.
+    """
+    return x
 
 
 def worker_init_fn(worker_id: int) -> None:
@@ -744,6 +760,27 @@ def partition_dataset(
     Will return a set of datasets, every dataset contains 1 partition of original dataset.
     And it can split the dataset based on specified ratios or evenly split into `num_partitions`.
     Refer to: https://github.com/pytorch/pytorch/blob/master/torch/utils/data/distributed.py.
+
+    Note:
+        It also can be used to partition dataset for ranks in distributed training.
+        For example, partition dataset before training and use `CacheDataset`, every rank trains with its own data.
+        It can avoid duplicated caching content in each rank, but will not do global shuffle before every epoch:
+
+        .. code-block:: python
+
+            data_partition = partition_dataset(
+                data=train_files,
+                num_partitions=dist.get_world_size(),
+                shuffle=True,
+                even_divisible=True,
+            )[dist.get_rank()]
+
+            train_ds = SmartCacheDataset(
+                data=data_partition,
+                transform=train_transforms,
+                replace_rate=0.2,
+                cache_num=15,
+            )
 
     Args:
         data: input dataset to split, expect a list of data.

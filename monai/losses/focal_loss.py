@@ -63,7 +63,7 @@ class FocalLoss(_Loss):
 
                 pred = torch.tensor([[1, 0], [0, 1], [1, 0]], dtype=torch.float32)
                 grnd = torch.tensor([[0], [1], [0]], dtype=torch.int64)
-                fl = FocalLoss()
+                fl = FocalLoss(to_onehot_y=True)
                 fl(pred, grnd)
 
         """
@@ -113,8 +113,9 @@ class FocalLoss(_Loss):
         t = target
 
         # Change the shape of input and target to B x N x num_voxels.
-        i = i.view(i.size(0), i.size(1), -1)
-        t = t.view(t.size(0), t.size(1), -1)
+        b, n = t.shape[:2]
+        i = i.reshape(b, n, -1)
+        t = t.reshape(b, n, -1)
 
         # Compute the log proba.
         logpt = F.log_softmax(i, dim=1)

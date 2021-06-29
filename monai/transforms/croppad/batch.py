@@ -58,7 +58,6 @@ class PadListDataCollate(InvertibleTransform):
     pass the inverse through multiprocessing.
 
     Args:
-        batch: batch of data to pad-collate
         method: padding method (see :py:class:`monai.transforms.SpatialPad`)
         mode: padding mode (see :py:class:`monai.transforms.SpatialPad`)
     """
@@ -72,6 +71,10 @@ class PadListDataCollate(InvertibleTransform):
         self.mode = mode
 
     def __call__(self, batch: Any):
+        """
+        Args:
+            batch: batch of data to pad-collate
+        """
         # data is either list of dicts or list of lists
         is_list_of_dicts = isinstance(batch[0], dict)
         # loop over items inside of each element in a batch
@@ -99,10 +102,10 @@ class PadListDataCollate(InvertibleTransform):
             padder = SpatialPad(max_shape, self.method, self.mode)  # type: ignore
             transform = padder if not output_to_tensor else Compose([padder, ToTensor()])
 
-            for idx in range(len(batch)):
-                im = batch[idx][key_or_idx]
+            for idx, batch_i in enumerate(batch):
+                im = batch_i[key_or_idx]
                 orig_size = im.shape[1:]
-                padded = transform(batch[idx][key_or_idx])
+                padded = transform(batch_i[key_or_idx])
                 batch = replace_element(padded, batch, idx, key_or_idx)
 
                 # If we have a dictionary of data, append to list

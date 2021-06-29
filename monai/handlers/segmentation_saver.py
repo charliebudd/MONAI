@@ -28,6 +28,13 @@ else:
 class SegmentationSaver:
     """
     Event handler triggered on completing every iteration to save the segmentation predictions into files.
+    It can extract the input image meta data(filename, affine, original_shape, etc.) and resample the predictions
+    based on the meta data.
+    The name of saved file will be `{input_image_name}_{output_postfix}{output_ext}`,
+    where the input image name is extracted from the meta data dictionary. If no meta data provided,
+    use index from 0 as the filename prefix.
+    The predictions can be PyTorch Tensor with [B, C, H, W, [D]] shape or a list of Tensor without batch dim.
+
     """
 
     def __init__(
@@ -94,12 +101,12 @@ class SegmentationSaver:
                 output_dir: /output,
                 data_root_dir: /foo/bar,
                 output will be: /output/test1/image/image_seg.nii.gz
-            batch_transform: a callable that is used to transform the
-                ignite.engine.batch into expected format to extract the meta_data dictionary.
-            output_transform: a callable that is used to transform the
-                ignite.engine.output into the form expected image data.
-                The first dimension of this transform's output will be treated as the
-                batch dimension. Each item in the batch will be saved individually.
+            batch_transform: a callable that is used to extract the `meta_data` dictionary of the input images
+                from `ignite.engine.state.batch`. the purpose is to extract necessary information from the meta data:
+                filename, affine, original_shape, etc.
+            output_transform: a callable that is used to extract the model prediction data from
+                `ignite.engine.state.output`. the first dimension of its output will be treated as the batch dimension.
+                each item in the batch will be saved individually.
             name: identifier of logging.logger to use, defaulting to `engine.logger`.
 
         """
@@ -113,9 +120,9 @@ class SegmentationSaver:
             scale=scale,
             dtype=dtype,
             output_dtype=output_dtype,
+            save_batch=True,
             squeeze_end_dims=squeeze_end_dims,
             data_root_dir=data_root_dir,
-            save_batch=True,
         )
         self.batch_transform = batch_transform
         self.output_transform = output_transform
@@ -144,4 +151,4 @@ class SegmentationSaver:
         meta_data = self.batch_transform(engine.state.batch)
         engine_output = self.output_transform(engine.state.output)
         self._saver(engine_output, meta_data)
-        self.logger.info("saved all the model outputs into files.")
+        self.logger.info("model outputs saved into files.")

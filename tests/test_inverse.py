@@ -21,13 +21,14 @@ import torch
 from parameterized import parameterized
 
 from monai.data import CacheDataset, DataLoader, create_test_image_2d, create_test_image_3d
-from monai.data.inverse_batch_transform import BatchInverseTransform
 from monai.data.utils import decollate_batch
 from monai.networks.nets import UNet
 from monai.transforms import (
     AddChanneld,
     Affined,
+    BatchInverseTransform,
     BorderPadd,
+    CenterScaleCropd,
     CenterSpatialCropd,
     Compose,
     CropForegroundd,
@@ -38,11 +39,14 @@ from monai.transforms import (
     Orientationd,
     RandAffined,
     RandAxisFlipd,
+    RandCropByPosNegLabeld,
     RandFlipd,
     Randomizable,
     RandRotate90d,
     RandRotated,
     RandSpatialCropd,
+    RandSpatialCropSamplesd,
+    RandWeightedCropd,
     RandZoomd,
     Resized,
     ResizeWithPadOrCrop,
@@ -52,8 +56,10 @@ from monai.transforms import (
     Spacingd,
     SpatialCropd,
     SpatialPadd,
+    Transposed,
     Zoomd,
     allow_missing_keys_mode,
+    convert_inverse_interp_mode,
 )
 from monai.utils import first, get_seed, optional_import, set_determinism
 from monai.utils.enums import InverseKeys
@@ -79,6 +85,7 @@ for name in ("1D even", "1D odd"):
             partial(DivisiblePadd, k=val),
             partial(ResizeWithPadOrCropd, spatial_size=20 + val),
             partial(CenterSpatialCropd, roi_size=10 + val),
+            partial(CenterScaleCropd, roi_scale=0.8),
             partial(CropForegroundd, source_key="label"),
             partial(SpatialCropd, roi_center=10, roi_size=10 + val),
             partial(SpatialCropd, roi_center=11, roi_size=10 + val),
@@ -121,13 +128,21 @@ TESTS.append(
     )
 )
 
-
 TESTS.append(
     (
         "SpatialCropd 2d",
         "2D",
         0,
         SpatialCropd(KEYS, [49, 51], [90, 89]),
+    )
+)
+
+TESTS.append(
+    (
+        "SpatialCropd 3d",
+        "3D",
+        0,
+        SpatialCropd(KEYS, roi_slices=[slice(s, e) for s, e in zip([None, None, -99], [None, -2, None])]),
     )
 )
 
@@ -149,9 +164,9 @@ TESTS.append(
     )
 )
 
-TESTS.append(("RandSpatialCropd 2d", "2D", 0, RandSpatialCropd(KEYS, [96, 93], True, False)))
+TESTS.append(("RandSpatialCropd 2d", "2D", 0, RandSpatialCropd(KEYS, [96, 93], None, True, False)))
 
-TESTS.append(("RandSpatialCropd 3d", "3D", 0, RandSpatialCropd(KEYS, [96, 93, 92], False, False)))
+TESTS.append(("RandSpatialCropd 3d", "3D", 0, RandSpatialCropd(KEYS, [96, 93, 92], None, False, False)))
 
 TESTS.append(
     (
@@ -219,7 +234,7 @@ TESTS.append(
 
 TESTS.append(("CropForegroundd 2d", "2D", 0, CropForegroundd(KEYS, source_key="label", margin=2)))
 
-TESTS.append(("CropForegroundd 3d", "3D", 0, CropForegroundd(KEYS, source_key="label")))
+TESTS.append(("CropForegroundd 3d", "3D", 0, CropForegroundd(KEYS, source_key="label", k_divisible=[5, 101, 2])))
 
 
 TESTS.append(("ResizeWithPadOrCropd 3d", "3D", 0, ResizeWithPadOrCropd(KEYS, [201, 150, 105])))
@@ -371,6 +386,24 @@ TESTS.append(
 
 TESTS.append(
     (
+        "Transposed 2d",
+        "2D",
+        0,
+        Transposed(KEYS, [0, 2, 1]),  # channel=0
+    )
+)
+
+TESTS.append(
+    (
+        "Transposed 3d",
+        "3D",
+        0,
+        Transposed(KEYS, [0, 3, 1, 2]),  # channel=0
+    )
+)
+
+TESTS.append(
+    (
         "Affine 3d",
         "3D",
         1e-1,
@@ -403,9 +436,52 @@ TESTS.append(
     )
 )
 
+TESTS.append(
+    (
+        "RandAffine 3d",
+        "3D",
+        0,
+        RandAffined(KEYS, spatial_size=None, prob=0),
+    )
+)
+
+TESTS.append(
+    (
+        "RandCropByPosNegLabeld 2d",
+        "2D",
+        1e-7,
+        RandCropByPosNegLabeld(KEYS, "label", (99, 96), num_samples=10),
+    )
+)
+
+TESTS.append(
+    (
+        "RandSpatialCropSamplesd 2d",
+        "2D",
+        1e-7,
+        RandSpatialCropSamplesd(KEYS, (90, 91), num_samples=10),
+    )
+)
+
+TESTS.append(
+    (
+        "RandWeightedCropd 2d",
+        "2D",
+        1e-7,
+        RandWeightedCropd(KEYS, "label", (90, 91), num_samples=10),
+    )
+)
+
 TESTS_COMPOSE_X2 = [(t[0] + " Compose", t[1], t[2], Compose(Compose(t[3:]))) for t in TESTS]
 
 TESTS = TESTS + TESTS_COMPOSE_X2  # type: ignore
+
+NUM_SAMPLES = 5
+N_SAMPLES_TESTS = [
+    [RandCropByPosNegLabeld(KEYS, "label", (110, 99), num_samples=NUM_SAMPLES)],
+    [RandSpatialCropSamplesd(KEYS, (90, 91), num_samples=NUM_SAMPLES, random_size=False)],
+    [RandWeightedCropd(KEYS, "label", (90, 91), num_samples=NUM_SAMPLES)],
+]
 
 
 def no_collation(x):
@@ -525,8 +601,15 @@ class TestInverse(unittest.TestCase):
         fwd_bck = forwards[-1].copy()
         for i, t in enumerate(reversed(transforms)):
             if isinstance(t, InvertibleTransform):
-                fwd_bck = t.inverse(fwd_bck)
-                self.check_inverse(name, data.keys(), forwards[-i - 2], fwd_bck, forwards[-1], acceptable_diff)
+                if isinstance(fwd_bck, list):
+                    for j, _fwd_bck in enumerate(fwd_bck):
+                        fwd_bck = t.inverse(_fwd_bck)
+                        self.check_inverse(
+                            name, data.keys(), forwards[-i - 2], fwd_bck, forwards[-1][j], acceptable_diff
+                        )
+                else:
+                    fwd_bck = t.inverse(fwd_bck)
+                    self.check_inverse(name, data.keys(), forwards[-i - 2], fwd_bck, forwards[-1], acceptable_diff)
 
     # skip this test if multiprocessing uses 'spawn', as the check is only basic anyway
     @skipUnless(torch.multiprocessing.get_start_method(allow_none=False) == "spawn", "requires spawn")
@@ -540,7 +623,8 @@ class TestInverse(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             t2.inverse(data)
 
-    def test_inverse_inferred_seg(self):
+    @parameterized.expand(N_SAMPLES_TESTS)
+    def test_inverse_inferred_seg(self, extra_transform):
 
         test_data = []
         for _ in range(20):
@@ -550,7 +634,13 @@ class TestInverse(unittest.TestCase):
         batch_size = 10
         # num workers = 0 for mac
         num_workers = 2 if sys.platform != "darwin" else 0
-        transforms = Compose([AddChanneld(KEYS), SpatialPadd(KEYS, (150, 153)), CenterSpatialCropd(KEYS, (110, 99))])
+        transforms = Compose(
+            [
+                AddChanneld(KEYS),
+                SpatialPadd(KEYS, (150, 153)),
+                extra_transform,
+            ]
+        )
         num_invertible_transforms = sum(1 for i in transforms.transforms if isinstance(i, InvertibleTransform))
 
         dataset = CacheDataset(test_data, transform=transforms, progress=False)
@@ -566,15 +656,20 @@ class TestInverse(unittest.TestCase):
         ).to(device)
 
         data = first(loader)
+        self.assertEqual(len(data["label_transforms"]), num_invertible_transforms)
+        self.assertEqual(data["image"].shape[0], batch_size * NUM_SAMPLES)
+
         labels = data["label"].to(device)
         segs = model(labels).detach().cpu()
         label_transform_key = "label" + InverseKeys.KEY_SUFFIX
         segs_dict = {"label": segs, label_transform_key: data[label_transform_key]}
 
         segs_dict_decollated = decollate_batch(segs_dict)
-
         # inverse of individual segmentation
         seg_dict = first(segs_dict_decollated)
+        # test to convert interpolation mode for 1 data of model output batch
+        convert_inverse_interp_mode(seg_dict, mode="nearest", align_corners=None)
+
         with allow_missing_keys_mode(transforms):
             inv_seg = transforms.inverse(seg_dict)["label"]
         self.assertEqual(len(data["label_transforms"]), num_invertible_transforms)
@@ -582,7 +677,7 @@ class TestInverse(unittest.TestCase):
         self.assertEqual(inv_seg.shape[1:], test_data[0]["label"].shape)
 
         # Inverse of batch
-        batch_inverter = BatchInverseTransform(transforms, loader, collate_fn=no_collation)
+        batch_inverter = BatchInverseTransform(transforms, loader, collate_fn=no_collation, detach=True)
         with allow_missing_keys_mode(transforms):
             inv_batch = batch_inverter(segs_dict)
         self.assertEqual(inv_batch[0]["label"].shape[1:], test_data[0]["label"].shape)

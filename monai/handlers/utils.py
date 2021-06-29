@@ -10,12 +10,14 @@
 # limitations under the License.
 
 import os
+import warnings
 from collections import OrderedDict
 from typing import TYPE_CHECKING, Dict, List, Optional, Sequence, Union
 
 import numpy as np
 import torch
 
+from monai.config import KeysCollection
 from monai.utils import ensure_tuple, exact_version, get_torch_version_tuple, optional_import
 
 idist, _ = optional_import("ignite", "0.4.4", exact_version, "distributed")
@@ -30,6 +32,7 @@ __all__ = [
     "evenly_divisible_all_gather",
     "string_list_all_gather",
     "write_metrics_reports",
+    "from_engine",
 ]
 
 
@@ -66,6 +69,10 @@ def evenly_divisible_all_gather(data: torch.Tensor) -> torch.Tensor:
         The input data on different ranks must have exactly same `dtype`.
 
     """
+    warnings.warn(
+        "evenly_divisible_all_gather had been moved to monai.utils module, will deprecate this API in MONAI v0.7.",
+        DeprecationWarning,
+    )
     if not isinstance(data, torch.Tensor):
         raise ValueError("input data must be PyTorch Tensor.")
 
@@ -95,6 +102,10 @@ def string_list_all_gather(strings: List[str]) -> List[str]:
         strings: a list of strings to all gather.
 
     """
+    warnings.warn(
+        "string_list_all_gather had been moved to monai.utils module, will deprecate this API in MONAI v0.7.",
+        DeprecationWarning,
+    )
     world_size = idist.get_world_size()
     if world_size <= 1:
         return strings
@@ -140,15 +151,24 @@ def write_metrics_reports(
         images: name or path of every input image corresponding to the metric_details data.
             if None, will use index number as the filename of every input image.
         metrics: a dictionary of (metric name, metric value) pairs.
-        metric_details: a dictionary of (metric name, metric raw values) pairs, usually, it comes from metrics computation,
-            for example, the raw value can be the mean_dice of every channel of every input image.
+        metric_details: a dictionary of (metric name, metric raw values) pairs, usually, it comes from metrics
+            computation, for example, the raw value can be the mean_dice of every channel of every input image.
         summary_ops: expected computation operations to generate the summary report.
-            it can be: None, "*" or list of strings.
-            None - don't generate summary report for every expected metric_details
+            it can be: None, "*" or list of strings, default to None.
+            None - don't generate summary report for every expected metric_details.
             "*" - generate summary report for every metric_details with all the supported operations.
             list of strings - generate summary report for every metric_details with specified operations, they
-            should be within this list: [`mean`, `median`, `max`, `min`, `90percent`, `std`].
-            default to None.
+            should be within list: ["mean", "median", "max", "min", "<int>percentile", "std", "notnans"].
+            the number in "<int>percentile" should be [0, 100], like: "15percentile". default: "90percentile".
+            for more details, please check: https://numpy.org/doc/stable/reference/generated/numpy.nanpercentile.html.
+            note that: for the overall summary, it computes `nanmean` of all classes for each image first,
+            then compute summary. example of the generated summary report::
+
+                class    mean    median    max    5percentile 95percentile  notnans
+                class0  6.0000   6.0000   7.0000   5.1000      6.9000       2.0000
+                class1  6.0000   6.0000   6.0000   6.0000      6.0000       1.0000
+                mean    6.2500   6.2500   7.0000   5.5750      6.9250       2.0000
+
         deli: the delimiter character in the file, default to "\t".
         output_type: expected output file type, supported types: ["csv"], default to "csv".
 
@@ -190,15 +210,48 @@ def write_metrics_reports(
                         "median": np.nanmedian,
                         "max": np.nanmax,
                         "min": np.nanmin,
-                        "90percent": lambda x: np.nanpercentile(x, 10),
+                        "90percentile": lambda x: np.nanpercentile(x[0], x[1]),
                         "std": np.nanstd,
+                        "notnans": lambda x: (~np.isnan(x)).sum(),
                     }
                 )
                 ops = ensure_tuple(summary_ops)
                 if "*" in ops:
                     ops = tuple(supported_ops.keys())
 
+                def _compute_op(op: str, d: np.ndarray):
+                    if op.endswith("percentile"):
+                        threshold = int(op.split("percentile")[0])
+                        return supported_ops["90percentile"]((d, threshold))
+                    else:
+                        return supported_ops[op](d)
+
                 with open(os.path.join(save_dir, f"{k}_summary.csv"), "w") as f:
                     f.write(f"class{deli}{deli.join(ops)}\n")
                     for i, c in enumerate(np.transpose(v)):
-                        f.write(f"{class_labels[i]}{deli}{deli.join([f'{supported_ops[k](c):.4f}' for k in ops])}\n")
+                        f.write(f"{class_labels[i]}{deli}{deli.join([f'{_compute_op(k, c):.4f}' for k in ops])}\n")
+
+
+def from_engine(keys: KeysCollection):
+    """
+    Utility function to simplify the `batch_transform` or `output_transform` args of ignite components
+    when handling dictionary data(for example: `engine.state.batch` or `engine.state.output`).
+    Users only need to set the expected keys, then it will return a callable function to extract data from
+    dictionary and construct a tuple respectively.
+    It can help avoid a complicated `lambda` function and make the arg of metrics more straight-forward.
+    For example, set the first key as the prediction and the second key as label to get the expected data
+    from `engine.state.output` for a metric::
+
+        from monai.handlers import MeanDice, from_engine
+
+        metric = MeanDice(
+            include_background=False,
+            output_transform=from_engine(["pred", "label"])
+        )
+
+    """
+
+    def _wrapper(output: Dict):
+        return tuple(output[k] for k in ensure_tuple(keys))
+
+    return _wrapper

@@ -24,8 +24,11 @@ class PNGSaver:
     """
     Save the data as png file, it can support single data content or a batch of data.
     Typically, the data can be segmentation predictions, call `save` for single data
-    or call `save_batch` to save a batch of data together. If no meta data provided,
-    use index from 0 as the filename prefix.
+    or call `save_batch` to save a batch of data together.
+    The name of saved file will be `{input_image_name}_{output_postfix}{output_ext}`,
+    where the input image name is extracted from the provided meta data dictionary.
+    If no meta data provided, use index from 0 as the filename prefix.
+
     """
 
     def __init__(
@@ -37,6 +40,7 @@ class PNGSaver:
         mode: Union[InterpolateMode, str] = InterpolateMode.NEAREST,
         scale: Optional[int] = None,
         data_root_dir: str = "",
+        print_log: bool = True,
     ) -> None:
         """
         Args:
@@ -59,6 +63,7 @@ class PNGSaver:
                 output_dir: /output,
                 data_root_dir: /foo/bar,
                 output will be: /output/test1/image/image_seg.png
+            print_log: whether to print log about the saved PNG file path, etc. default to `True`.
 
         """
         self.output_dir = output_dir
@@ -68,6 +73,7 @@ class PNGSaver:
         self.mode: InterpolateMode = InterpolateMode(mode)
         self.scale = scale
         self.data_root_dir = data_root_dir
+        self.print_log = print_log
 
         self._data_index = 0
 
@@ -121,6 +127,9 @@ class PNGSaver:
             mode=self.mode,
             scale=self.scale,
         )
+
+        if self.print_log:
+            print(f"file written: {path}.")
 
     def save_batch(self, batch_data: Union[torch.Tensor, np.ndarray], meta_data: Optional[Dict] = None) -> None:
         """Save a batch of data into png format files.
